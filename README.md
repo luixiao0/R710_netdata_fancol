@@ -1,7 +1,9 @@
 # R710_netdata_fancol
-control R710 fan speed with netdata via IPMItool (GPU pwoer considered)
+control Dell R710 fan speed with netdata's data via IPMItool (GPU pwoer considered)
 
 requirements:
-  python-netdata
+  python:
+    pip install python-netdata numpy
+    
   IPMItool for your system
-  a working netdata daemon (docker for unraid)
+  a working netdata daemon (my case is a docker container from unraid)
