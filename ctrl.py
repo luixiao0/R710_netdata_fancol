@@ -1,4 +1,4 @@
-"""Sample code to interact with a Netdata instance."""
+"""Sample code to interact with a Netdata instance"""
 import asyncio
 import os
 import re
@@ -36,9 +36,7 @@ class IpmiMessage():
         except subprocess.CalledProcessError as e:
             print(e)
             err = f'[IPMI] - There was an error in the IPMI message, is ipmitool installed?'
-            raise ValueError(err)
         return self
-
 
 class Server():
     def __init__(self, host=None, username=None, password=None):
@@ -103,8 +101,8 @@ class Server():
         out = self.do_cmd(cmd='sdr type current')
         for line in out.split("\n"):
             if "System Level" in line:
-                return line.split("|")[-1]
-
+                watt = int(line.split("|")[-1][:-5])
+                return watt
     def get_temp(self):
         """
         Gets the ambient temperature from the server
@@ -140,8 +138,7 @@ class Server():
         Sets the server fan speed to the percentage given in fan_speed_pct argument
         Returns: the response (if any) from the server
         """
-        print(f'[IPMI] - ({self.__host}) - Activating manual fan control, fan speed: {fan_speed_pct}%.')
-        out = self.do_cmd(cmd='raw 0x30 0x30 0x01 0x00')
+        #print(f'[IPMI] - ({self.__host}) - Activating manual fan control, fan speed: {fan_speed_pct}%.')
         out = self.do_cmd(cmd=f'raw 0x30 0x30 0x02 0xff {hex(fan_speed_pct)}')
         return out
 
@@ -156,52 +153,78 @@ class Server():
             r = [0]
         return int(max(r))
 
-
+# customized fan algorithm here !
 class ctrl():
-    def __init__(self):
+    def __init__(self, host_m, uname, psw):
         self.data = numpy.zeros(8)
         self.prev = 0
-        self.slope = {}
-        self.curfan = 1
+        self.thrend = [0,0,0,0,0,0,0,0]
+        self.curfan = 10
         self.curpower = 0
-        self.s = Server(host='192.168.1.201', username='root', password='123456')
-        self.target = 52
+        self.s = Server(host=host_m, username=uname, password=psw)
+        self.target = 55
         self.cpu_power_level = 0
+        self.s.do_cmd(cmd='raw 0x30 0x30 0x01 0x00')
+    # update data    
     def inject(self, data, cpu_util):
         self.curpower = self.s.get_power_level()
-        self.cpu_power_level = cpu_util * 1.6
+        self.cpu_power_level = min(max(30,cpu_util * 1.6),160)
         # E5620x2 MAX TDP about 160w
         self.data = numpy.asarray(data)
 
+    # actually change the fan speed
     def run(self):
         self.curfan = min(max(self.curfan, 1), 100)
+        print(self.curfan)
         self.s.set_fan_speed_manual(fan_speed_pct=int(self.curfan))
-
+    # do algorithm step
     def step(self):
         avgtemp = sum(self.data) / len(self.data)
+        tdelta = sum(self.thrend)/len(self.thrend)
+        finetune = 2 # define finetune degrade multiplier, at finetune mode fan change lazier
 
-        # detect emergency
+        # detect emergency situation, ramp up 5% every second
         if self.data.any() > 68:
-            self.curfan += 10
+            self.curfan += 5
         else:
-            if avgtemp > self.target:
-                slope = avgtemp - self.prev
-                if slope > 0:
-                    self.curfan += 5 * slope
+            # get changing rate and distance to target 
+            slope = avgtemp - self.prev
+            delta = avgtemp - self.target
+            
+            # detect the workload changing, exit the finetune mode
+            if abs(delta) > 5:
+                finetune = 1
+            # define the delta of the fan speed(%) should change    
+            delta_adj = min(abs(delta-tdelta)/finetune, 3) 
+            
+            if delta > 0:
+                self.curfan += delta_adj
             else:
-                self.curfan -= self.curfan * 10
-        rest_power = min(20, self.curpower - self.cpu_power_level)
-        self.curfan += rest_power/600
-
+                self.curfan -= delta_adj
+                
+        # consider GPU disk etc.
+        rest_power = min(0, self.curpower - 50 - self.cpu_power_level) #50watt(passively) to air
+        self.curfan += rest_power/10 #Ramp up 1% extra every 10 watt
+        # print(finetune, self.thrend)
+        # actually run
         self.run()
         self.prev = avgtemp  # AVG coretemp
-
+        self.thrend.append(delta) # data update
+        self.thrend.pop(0)
 
 async def main():
-    c = ctrl()
-    """Get the data from a Netdata instance."""
+
+    netdatadest = '192.168.1.200'
+    
+    ipmidest = '192.168.1.254'
+    username = 'root'
+    password = '123456'
+
+    c = ctrl(ipmidest, username, password)
+    
+    # Get the data from a Netdata instance.
     async with aiohttp.ClientSession() as session:
-        data = Netdata("1.ya1.top", loop, session,port=21197)
+        data = Netdata(netdatadest, loop, session)
         # Get data for the CPU
         while True:
             time.sleep(1)
@@ -217,12 +240,15 @@ async def main():
                     cores.append(data.values[name])
 
             await data.get_data("system.cpu")
+            # select cpu data here
             for name in data.values:
                 if name != 'time':
                     cpu_util += data.values[name]
+            # goto custom curve
             c.inject(cores,cpu_util)
             c.step()
 
 
-loop = asyncio.get_event_loop()
-loop.run_until_complete(main())
+if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
