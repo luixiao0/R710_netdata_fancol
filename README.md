@@ -5,6 +5,5 @@ requirements:
   python:
     pip install aiohttp python-netdata numpy
     
-  IPMItool for your system
-  a working netdata daemon (my case is a docker container from unraid)
+  IPMItool of your system, a working netdata daemon (my case is a docker container from unraid)
   it can be run at your router(like openwrt) or another server
