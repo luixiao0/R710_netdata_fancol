@@ -3,7 +3,8 @@ control Dell R710 fan speed with netdata's data via IPMItool (GPU pwoer consider
 
 requirements:
   python:
-    pip install python-netdata numpy
+    pip install aiohttp python-netdata numpy
     
   IPMItool for your system
   a working netdata daemon (my case is a docker container from unraid)
+  it can be run at your router(like openwrt) or another server
